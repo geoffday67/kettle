@@ -1,22 +1,25 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <ArduinoHttpClient.h>
 
-#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex
-#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+#include "mqtt.h"
 
-#define KETTLE_HOST     "192.168.68.106"
-#define KETTLE_PORT     1968
-#define KETTLE_URI      "/interface"
+#define BUTTON_PIN_BITMASK 0x200000000  // 2^33 in hex
+#define uS_TO_S_FACTOR 1000000          /* Conversion factor for micro seconds to seconds */
 
-#define RED_LED     25
-#define GREEN_LED   26
-#define BLUE_LED    27
+#define MQTT_SERVER "192.168.68.106"
+#define MQTT_PORT 1883
+#define MQTT_CLIENT "kettle-remote"
+#define MQTT_TOPIC "switches/kettle"
+#define MQTT_ON_MESSAGE "on"
+
+#define RED_LED 25
+#define GREEN_LED 26
+#define BLUE_LED 27
 
 WiFiClient wifi;
 
 void showLED(int led) {
-  switch(led) {
+  switch (led) {
     case RED_LED:
       digitalWrite(RED_LED, LOW);
       digitalWrite(GREEN_LED, HIGH);
@@ -36,72 +39,74 @@ void showLED(int led) {
 }
 
 bool connectWiFi() {
-    bool result = false;
-    unsigned long start;
+  bool result = false;
+  unsigned long start;
+  int tries;
 
+  for (tries = 0; tries < 3; tries++) {
     WiFi.hostname("Kettle");
     WiFi.begin("Wario", "mansion1");
     Serial.print("Connecting to Wario ");
 
     start = millis();
     while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - start > 20000) {
-            Serial.println();
-            Serial.println("Timed out connecting to access point");
-            goto exit;
-        }
-        delay(100);
-        Serial.print(".");
+      if (millis() - start > 5000) {
+        Serial.println();
+        Serial.println("Timed out connecting to access point");
+        break;
+      }
+      delay(100);
+      Serial.print(".");
     }
-    Serial.println();
-    Serial.print("Connected, IP address: ");
-    Serial.println(WiFi.localIP());
+    if (WiFi.status() == WL_CONNECTED) {
+      break;
+    }
+  }
 
-    result = true;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("Failed to connect to WiFi after %d tries\n", tries);
+    goto exit;
+  }
+
+  Serial.println();
+  Serial.print("Connected, IP address: ");
+  Serial.println(WiFi.localIP());
+
+  result = true;
 
 exit:
-    return result;
+  return result;
 }
 
 void disconnectWiFi() {
+  wifi.flush();
   WiFi.mode(WIFI_OFF);
   Serial.println("WiFi disconnected");
 }
 
 bool kettleOn() {
+  MQTT mqtt(wifi);
   bool result = false;
-  HttpClient client = HttpClient(wifi, KETTLE_HOST, KETTLE_PORT);
-  char body[] = "operation=433&channel=3&command=on";
-  int code;
 
   if (!connectWiFi()) {
     Serial.println("Error connecting WiFi");
     goto exit;
   }
 
-  Serial.printf ("Sending: %s\n", body);
-
-  client.beginRequest();
-  client.post(KETTLE_URI);
-  client.sendHeader("Content-Type", "application/x-www-form-urlencoded");
-  client.sendHeader("Content-Length", strlen(body));
-  client.sendBasicAuth("wario", "mansion1");
-  client.beginBody();
-  client.print(body);
-  client.endRequest();
-
-  code = client.responseStatusCode();
-
-  if (code != 200) {
-    Serial.printf ("Error response %d\n", code);
+  if (!mqtt.connect(MQTT_SERVER, MQTT_PORT, MQTT_CLIENT)) {
+    Serial.println("Error connecting MQTT");
     goto exit;
   }
 
-  Serial.printf ("Received code %d: %s\n", code, client.responseBody().c_str());
+  if (!mqtt.publish(MQTT_TOPIC, MQTT_ON_MESSAGE)) {
+    Serial.println("Error publishing to MQTT");
+    goto exit;
+  }
 
   result = true;
 
 exit:
+  mqtt.disconnect();
   disconnectWiFi();
   return result;
 }
@@ -122,7 +127,7 @@ void handleButtonWakeup() {
   esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
 }
 
-void setup(){
+void setup() {
   Serial.begin(115200);
   Serial.println("Starting");
 
@@ -140,6 +145,6 @@ void setup(){
   esp_deep_sleep_start();
 }
 
-void loop(){
-  //This is not going to be called
+void loop() {
+  // This is not going to be called
 }
